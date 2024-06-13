@@ -1,0 +1,56 @@
+version: "3.0"
+
+services:
+  elasticsearch:
+    container_name: elasticsearch
+    networks:
+      - telemetry-network
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    volumes:
+      - ./elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml
+      - ./elasticdata:/usr/share/elasticsearch/data
+    ports:
+      - 9200:9200
+    environment:
+      # - cluster.name=opentelemetry
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g 
+      - http.host=0.0.0.0
+      - transport.host=127.0.0.1
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    # healthcheck:
+    #   test:
+    #     [
+    #       "CMD-SHELL",
+    #       "curl -s --cacert config/certs/ca/ca.crt https://localhost:9200 | grep -q 'missing authentication credentials'",
+    #     ]
+    #   interval: 10s
+    #   timeout: 10s
+    #   retries: 120
+  kibana:
+    container_name: kibana
+    depends_on: 
+      - elasticsearch
+    networks:
+      - telemetry-network
+    image: docker.elastic.co/kibana/kibana:8.13.4
+    volumes:
+      # - certs:/usr/share/kibana/config/certs
+      - ./kibanadata:/usr/share/kibana/data
+    ports:
+      - 5601:5601
+    environment:
+      # - SERVERNAME=kibana
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+
+
+networks:
+  telemetry-network:
+    driver: bridge
