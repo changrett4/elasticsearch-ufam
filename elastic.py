@@ -1,10 +1,11 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from elasticsearch import Elasticsearch
 import pandas as pd
 from elasticsearch.helpers import bulk
 
 app = Flask(__name__)
-
+CORS(app)
 # Conectar ao Elasticsearch
 es = Elasticsearch("http://localhost:9200")
 
