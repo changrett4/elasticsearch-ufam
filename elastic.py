@@ -3,11 +3,24 @@ from flask_cors import CORS
 from elasticsearch import Elasticsearch
 import pandas as pd
 from elasticsearch.helpers import bulk
+#import nltk
+#from nltk.corpus import wordnet as wn
+#pip install nltk
+#nltk.download('wordnet')
+#nltk.download('omw-1.4')
+
+#def get_synonyms(term, lang='por'):
+#    synonyms = set()
+#    for synset in wn.synsets(term, lang=lang):
+#        for lemma in synset.lemmas(lang=lang):
+#            synonyms.add(lemma.name())
+#    return list(synonyms)
 
 app = Flask(__name__)
 CORS(app)
 # Conectar ao Elasticsearch
 es = Elasticsearch("http://localhost:9200")
+
 
 # Leitura do arquivo CSV
 df = pd.read_csv("amazon_products.csv")
@@ -34,40 +47,65 @@ settings = {
         "number_of_shards": 1,
         "number_of_replicas": 1,
         "analysis": {
+            "filter": {
+                "brazilian_stemmer": {
+                    "type": "stemmer",
+                    "language": "brazilian"
+                }
+            },
             "analyzer": {
+                "brazilian": {
+                    "tokenizer": "my_tokenizer",
+                    "filter": [
+                        "brazilian_stemmer",
+                        "lowercase",
+                        "asciifolding"
+                    ]
+                },
                 "my_custom_analyzer": {
                     "type": "custom",
-                    "tokenizer": "my_tokenizer",
+                    "tokenizer": "standard",
                     "filter": ["lowercase", "asciifolding"]
                 }
             },
-
             "tokenizer": {
                 "my_tokenizer": {
                     "type": "edge_ngram",
-                    "min_gram": 4,
+                    "min_gram": 3,
                     "max_gram": 20,
                     "token_chars": [
                         "letter",
                         "digit"
                     ]
                 }
-             }
+            }
         }
     },
     "mappings": {
         "properties": {
             "title": {
                 "type": "text",
+                "analyzer": "brazilian"
+            },
+            "stars": {
+                "type": "float"
+            },
+            "reviews": {
+                "type": "integer"
+            },
+            "price": {
+                "type": "float"
+            },
+            "categoryName": {
+                "type": "text",
                 "analyzer": "my_custom_analyzer"
             },
-            "stars": {"type": "float"},
-            "reviews": {"type": "integer"},
-            "price": {"type": "float"},
-            "categoryName": {"type": "text", "analyzer":"my_custom_analyzer"},
-            "isBestSeller": {"type": "integer"},
-            "boughtInLastMonth": {"type": "integer"}
-            # Adicione mais campos aqui conforme necessário
+            "isBestSeller": {
+                "type": "integer"
+            },
+            "boughtInLastMonth": {
+                "type": "integer"
+            }
         }
     }
 }
@@ -106,29 +144,44 @@ def search():
     # Construindo cláusulas de match para cada termo
     for term in terms:
         should_matches.append( {"match":{"title": term } })
-    
+        should_matches.append( {"match":{"categoryName": term } })
+
     # Realizando a busca no Elasticsearch
     resp = es.search(
-        index="products",
-        query={
-            "function_score":{
+    index="products",
+    query={
+        "function_score": {
             "query": {
                 "bool": {
-                    "must": should_matches
+                    "should": should_matches
                 }
             },
-                    "script_score":{
-                    "script":{
-
-                        "source":"(doc['isBestSeller'].value * 20 ) + doc['boughtInLastMonth'].value * 15 + (Math.log(1+doc['reviews'].value)*doc['stars'].value*2) + (1 / ( doc['price'].value + 1)) "
+            "functions": [
+                {
+                    "weight": 1000,
+                    "filter": {
+                        "match": {
+                            "title": query
+                        }
                     }
                 },
-            },
+                {
+                    "script_score": {
+                        "script": {
+                            "source": "(doc['isBestSeller'].value * 1) + " +
+                                     "doc['boughtInLastMonth'].value * 1 + " +
+                                      "(Math.log(1 + doc['reviews'].value) * doc['stars'].value * 2) + " +
+                                      "(1 / (doc['price'].value + 1))"
+                        }
+                    }
+                }
+            ],
+            "boost_mode": "sum"
+        }
+    },
+    size=10
+)
 
-            
-        },
-        size=10  
-    )
     
     # Formatando o resultado
     results = [hit['_source'] for hit in resp['hits']['hits']]
