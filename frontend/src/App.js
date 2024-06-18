@@ -20,7 +20,7 @@ function App() {
   }
 
   return (
-    <div>
+    <div style={{ marginTop: '5rem' }}>
       <BarraPesquisa onSearch={pesquisa}/>
       <ResultadosPesquisa results={results}/>
     </div>
