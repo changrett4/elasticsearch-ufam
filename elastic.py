@@ -3,31 +3,18 @@ from flask_cors import CORS
 from elasticsearch import Elasticsearch
 import pandas as pd
 from elasticsearch.helpers import bulk
-#import nltk
-#from nltk.corpus import wordnet as wn
-#pip install nltk
-#nltk.download('wordnet')
-#nltk.download('omw-1.4')
-
-#def get_synonyms(term, lang='por'):
-#    synonyms = set()
-#    for synset in wn.synsets(term, lang=lang):
-#        for lemma in synset.lemmas(lang=lang):
-#            synonyms.add(lemma.name())
-#    return list(synonyms)
 
 app = Flask(__name__)
 CORS(app)
 # Conectar ao Elasticsearch
 es = Elasticsearch("http://localhost:9200")
 
-
 # Leitura do arquivo CSV
 df = pd.read_csv("amazon_products.csv")
 
 # Remoção de linhas com valores ausentes
 df = df.dropna()
-columns_to_drop = ['imgUrl', 'productURL','asin','listPrice']
+columns_to_drop = ['imgUrl', 'productURL', 'asin', 'listPrice']
 df.drop(columns_to_drop, axis=1, inplace=True)
 
 # Obter o número de linhas do DataFrame
@@ -39,7 +26,7 @@ sample_size = min(10000, num_rows)
 # Amostragem do DataFrame e reset dos índices
 df = df.sample(sample_size, random_state=42).reset_index(drop=True)
 
-index_name= "products"
+index_name = "products"
 
 # Definição das configurações e mapeamento do índice
 settings = {
@@ -47,36 +34,11 @@ settings = {
         "number_of_shards": 1,
         "number_of_replicas": 1,
         "analysis": {
-            "filter": {
-                "brazilian_stemmer": {
-                    "type": "stemmer",
-                    "language": "brazilian"
-                }
-            },
             "analyzer": {
-                "brazilian": {
-                    "tokenizer": "my_tokenizer",
-                    "filter": [
-                        "brazilian_stemmer",
-                        "lowercase",
-                        "asciifolding"
-                    ]
-                },
                 "my_custom_analyzer": {
                     "type": "custom",
                     "tokenizer": "standard",
                     "filter": ["lowercase", "asciifolding"]
-                }
-            },
-            "tokenizer": {
-                "my_tokenizer": {
-                    "type": "edge_ngram",
-                    "min_gram": 3,
-                    "max_gram": 20,
-                    "token_chars": [
-                        "letter",
-                        "digit"
-                    ]
                 }
             }
         }
@@ -85,7 +47,7 @@ settings = {
         "properties": {
             "title": {
                 "type": "text",
-                "analyzer": "brazilian"
+                "analyzer": "my_custom_analyzer"
             },
             "stars": {
                 "type": "float"
@@ -119,7 +81,7 @@ bulk_data = []
 for i, row in df.iterrows():
     doc = row.to_dict()
 
-    doc['isBestSeller'] = 1 if doc['isBestSeller']  else 0
+    doc['isBestSeller'] = 1 if doc['isBestSeller'] else 0
 
     bulk_data.append(
         {
@@ -137,55 +99,55 @@ es.indices.refresh(index="products")
 def search():
     # Obtendo o parâmetro de busca da URL
     query = request.args.get('q', '')
-    
-    terms = query.split()
-    should_matches = []
 
-    # Construindo cláusulas de match para cada termo
-    for term in terms:
-        should_matches.append( {"match":{"title": term } })
-        should_matches.append( {"match":{"categoryName": term } })
+    # Construindo cláusula de match_phrase para termos exatos
+    must_matches = []
+    must_matches.append({"match_phrase": {"title": {"query": query, "boost": 50}}})
+
+    # Construindo cláusula de match para categoria
+    should_matches = []
+    should_matches.append({"match": {"categoryName": query}})
 
     # Realizando a busca no Elasticsearch
     resp = es.search(
-    index="products",
-    query={
-        "function_score": {
-            "query": {
-                "bool": {
-                    "should": should_matches
-                }
-            },
-            "functions": [
-                {
-                    "weight": 1000,
-                    "filter": {
-                        "match": {
-                            "title": query
-                        }
+        index="products",
+        query={
+            "function_score": {
+                "query": {
+                    "bool": {
+                        "must": must_matches,
+                        "should": should_matches
                     }
                 },
-                {
-                    "script_score": {
-                        "script": {
-                            "source": "(doc['isBestSeller'].value * 1) + " +
-                                     "doc['boughtInLastMonth'].value * 1 + " +
-                                      "(Math.log(1 + doc['reviews'].value) * doc['stars'].value * 2) + " +
-                                      "(1 / (doc['price'].value + 1))"
+                "functions": [
+                    {
+                        "weight": 1000,
+                        "filter": {
+                            "match_phrase": {
+                                "title": {"query": query, "boost": 50}
+                            }
+                        }
+                    },
+                    {
+                        "script_score": {
+                            "script": {
+                                "source": "(doc['isBestSeller'].value * 1) + " +
+                                          "doc['boughtInLastMonth'].value * 1 + " +
+                                          "(Math.log(1 + doc['reviews'].value) * doc['stars'].value * 2) + " +
+                                          "(1 / (doc['price'].value + 1))"
+                            }
                         }
                     }
-                }
-            ],
-            "boost_mode": "sum"
-        }
-    },
-    size=10
-)
+                ],
+                "boost_mode": "sum"
+            }
+        },
+        size=10
+    )
 
-    
     # Formatando o resultado
     results = [hit['_source'] for hit in resp['hits']['hits']]
-    
+
     return jsonify(results)
 
 if __name__ == '__main__':
