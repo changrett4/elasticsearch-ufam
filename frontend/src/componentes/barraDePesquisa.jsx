@@ -15,7 +15,7 @@ const BarraPesquisa = ({ onSearch }) => {
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search..."
+          placeholder="Digite sua pesquisa"
         />
         <button type="submit">Pesquisar</button>
       </form>
