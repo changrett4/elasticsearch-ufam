@@ -3,25 +3,29 @@ from flask_cors import CORS
 from elasticsearch import Elasticsearch
 import pandas as pd
 from elasticsearch.helpers import bulk
+import lightgbm as lgb
+import numpy as np
 
 app = Flask(__name__)
 CORS(app)
+
 # Conectar ao Elasticsearch
 es = Elasticsearch("http://localhost:9200")
+model = lgb.Booster(model_file='lambdamart_model.txt')
 
 # Leitura do arquivo CSV
 df = pd.read_csv("amazon_products.csv")
 
 # Remoção de linhas com valores ausentes
 df = df.dropna()
-columns_to_drop = ['imgUrl', 'productURL', 'asin', 'listPrice']
+columns_to_drop = ['productURL', 'asin', 'listPrice']
 df.drop(columns_to_drop, axis=1, inplace=True)
 
 # Obter o número de linhas do DataFrame
 num_rows = df.shape[0]
-
-# Definir o tamanho da amostra como o menor valor entre 10000 e o total de linhas
-sample_size = min(10000, num_rows)
+features_columns = ['reviews', 'boughtInLastMonth']
+# Definir o tamanho da amostra como o menor valor entre 20000 e o total de linhas
+sample_size = min(20000, num_rows)
 
 # Amostragem do DataFrame e reset dos índices
 df = df.sample(sample_size, random_state=42).reset_index(drop=True)
@@ -67,6 +71,9 @@ settings = {
             },
             "boughtInLastMonth": {
                 "type": "integer"
+            },
+            "imgUrl": {
+                "type": "text"
             }
         }
     }
@@ -80,6 +87,10 @@ if not es.indices.exists(index=index_name):
 bulk_data = []
 for i, row in df.iterrows():
     doc = row.to_dict()
+    
+    titulo = doc['title']
+    first_term = titulo.split()[0]
+    doc["first_term"] = first_term
 
     doc['isBestSeller'] = 1 if doc['isBestSeller'] else 0
 
@@ -99,54 +110,45 @@ es.indices.refresh(index="products")
 def search():
     # Obtendo o parâmetro de busca da URL
     query = request.args.get('q', '')
+    first = query.split()[0]
 
     # Construindo cláusula de match_phrase para termos exatos
-    must_matches = []
-    must_matches.append({"match_phrase": {"title": {"query": query, "boost": 50}}})
+    must_matches = [{"match": {"first_term": {"query": first, "boost": 5000}}},
+        {"match": {"title": {"query": query, "boost": 1000}}}]
 
     # Construindo cláusula de match para categoria
-    should_matches = []
-    should_matches.append({"match": {"categoryName": query}})
+    should_matches = [{"match": {"categoryName": query}}]
 
-    # Realizando a busca no Elasticsearch
+    # Realizar a busca no Elasticsearch
     resp = es.search(
-        index="products",
+        index='products',
         query={
-            "function_score": {
-                "query": {
-                    "bool": {
-                        "must": must_matches,
-                        "should": should_matches
-                    }
-                },
-                "functions": [
-                    {
-                        "weight": 1000,
-                        "filter": {
-                            "match_phrase": {
-                                "title": {"query": query, "boost": 50}
-                            }
-                        }
-                    },
-                    {
-                        "script_score": {
-                            "script": {
-                                "source": "(doc['isBestSeller'].value * 1) + " +
-                                          "doc['boughtInLastMonth'].value * 1 + " +
-                                          "(Math.log(1 + doc['reviews'].value) * doc['stars'].value * 2) + " +
-                                          "(1 / (doc['price'].value + 1))"
-                            }
-                        }
-                    }
-                ],
-                "boost_mode": "sum"
+            "bool": {
+                "must": must_matches,
+                "should": should_matches
             }
         },
         size=10
     )
 
-    # Formatando o resultado
-    results = [hit['_source'] for hit in resp['hits']['hits']]
+    # Obter os documentos
+    hits = [hit['_source'] for hit in resp['hits']['hits']]
+
+    # Criar um DataFrame com os documentos retornados
+    docs_df = pd.DataFrame(hits)
+
+    # Extrair features dos documentos
+    docs_features = docs_df[features_columns].values
+
+    # Classificar documentos com o modelo LambdaMART
+    scores = model.predict(docs_features)
+    docs_df['score'] = scores
+
+    # Ordenar documentos com base nas previsões
+    sorted_docs = docs_df.sort_values(by='score', ascending=False)
+
+    # Retornar os resultados classificados
+    results = sorted_docs.to_dict(orient='records')
 
     return jsonify(results)
 

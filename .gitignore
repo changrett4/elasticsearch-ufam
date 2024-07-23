@@ -4,3 +4,5 @@ archive
 archive.zip
 esdata
 amazon_products.csv
+training_data_ficticio.csv
+lambdamart_model.txt
